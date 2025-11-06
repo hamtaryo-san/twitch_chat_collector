@@ -1,0 +1,42 @@
+# チャンネル監視設定ファイル
+
+# 監視対象チャンネルのリスト
+# user_loginまたはuser_idのいずれかを指定してください
+channels:
+  - user_login: "shroud"
+    display_name: "shroud"
+    enabled: true
+    notes: "FPS streamer"
+
+  - user_login: "xqc"
+    display_name: "xQc"
+    enabled: true
+    notes: "Variety streamer"
+
+  - user_login: "pokimane"
+    display_name: "Pokimane"
+    enabled: true
+    notes: "Variety streamer"
+
+  # user_idで指定する例
+  # - user_id: "12345678"
+  #   display_name: "Example Streamer"
+  #   enabled: true
+  #   notes: "Example"
+
+  # 無効化する例
+  # - user_login: "example"
+  #   display_name: "Example"
+  #   enabled: false
+  #   notes: "Temporarily disabled"
+
+# スケジューラー設定
+scheduler:
+  # 配信チェック間隔（分）
+  interval_minutes: 1
+
+  # EventSub再接続インターバル（秒）
+  reconnect_interval: 5
+
+  # 最大再接続試行回数
+  max_reconnect_attempts: 10

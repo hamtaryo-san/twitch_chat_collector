@@ -1,0 +1,19 @@
+[Unit]
+Description=Twitch Chat Collector Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=your_username
+WorkingDirectory=/path/to/twitch_chat_collector
+Environment="PATH=/path/to/twitch_chat_collector/venv/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/path/to/twitch_chat_collector/venv/bin/python daemon.py --config channels.yaml
+Restart=always
+RestartSec=10
+
+# ログ設定
+StandardOutput=append:/path/to/twitch_chat_collector/collector_daemon.log
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
