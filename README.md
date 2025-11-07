@@ -11,6 +11,8 @@ Twitchライブ配信のチャットメッセージ、モデレーションイ�
 - **バックグラウンド実行**: デーモン化によるバックグラウンド実行
 - **配信情報管理**: Twitch Helix APIを使用した配信情報の取得と保存
 - **データベース保存**: SQLAlchemyによる柔軟なデータベース管理（SQLite、PostgreSQL、MySQL対応）
+- **🆕 トークン自動更新**: Refresh Tokenによる4時間ごとの自動更新（手動介入不要）
+- **🆕 長期運用対応**: 毎時トークン検証、401エラー自動リカバリ
 
 ## アーキテクチャ
 
@@ -59,6 +61,18 @@ Twitchライブ配信のチャットメッセージ、モデレーションイ�
    - スケジューラーとコレクターの統合実行
    - PIDファイル管理
    - シグナルハンドリング
+   - 🆕 毎時トークン検証（公式必須要件）
+
+9. **🆕 token_manager.py** - OAuth Token Manager
+   - Refresh Tokenによるトークン自動更新
+   - 起動時 + 毎時のトークン検証（Twitch公式推奨）
+   - 401エラー時の即座なリフレッシュ
+   - .envファイルへの自動保存
+
+10. **🆕 oauth_authenticator.py** - 初回OAuth認証
+    - ブラウザでの認証フロー
+    - Access Token + Refresh Token の自動取得
+    - .envファイルへの自動保存
 
 ## セットアップ
 
@@ -79,37 +93,11 @@ pip install -r requirements.txt
 2. 「アプリケーションを登録」をクリック
 3. アプリケーション情報を入力：
    - 名前: 任意のアプリケーション名
-   - OAuth リダイレクト URL: `http://localhost:3000`（ローカル開発用）
+   - **OAuth リダイレクト URL**: `http://localhost:3000/callback` ⚠️ 重要
    - カテゴリ: Chat Bot または Application Integration
 4. 作成後、**Client ID** と **Client Secret** をコピー
 
-### 3. ユーザーアクセストークンの取得
-
-IRC接続にはユーザーアクセストークンが必要です。以下のスコープが必要です：
-- `chat:read` - 任意のチャンネルのチャットメッセージ、削除、Ban/タイムアウトイベントの読み取り
-
-#### トークン取得方法（Authorization Code Flow）
-
-1. ブラウザで以下のURLにアクセス（CLIENT_IDを置き換え）：
-```
-https://id.twitch.tv/oauth2/authorize?client_id=CLIENT_ID&redirect_uri=http://localhost:3000&response_type=code&scope=chat:read
-```
-
-2. Twitchにログインし、権限を承認
-3. リダイレクトされたURLから`code`パラメータを取得
-4. 以下のコマンドでアクセストークンを取得（CLIENT_ID、CLIENT_SECRET、CODEを置き換え）：
-```bash
-curl -X POST 'https://id.twitch.tv/oauth2/token' \
-  -d 'client_id=CLIENT_ID' \
-  -d 'client_secret=CLIENT_SECRET' \
-  -d 'code=CODE' \
-  -d 'grant_type=authorization_code' \
-  -d 'redirect_uri=http://localhost:3000'
-```
-
-5. レスポンスから`access_token`を取得
-
-### 4. 環境変数の設定
+### 3. 環境変数の設定
 
 `.env.example`を`.env`にコピーして編集：
 
@@ -117,17 +105,36 @@ curl -X POST 'https://id.twitch.tv/oauth2/token' \
 cp .env.example .env
 ```
 
-`.env`ファイルを編集：
+`.env`ファイルを編集（Client IDとClient Secretのみ設定）：
 
 ```env
-TWITCH_CLIENT_ID=your_client_id
-TWITCH_CLIENT_SECRET=your_client_secret
-TWITCH_ACCESS_TOKEN=your_user_access_token
+TWITCH_CLIENT_ID=your_client_id_here
+TWITCH_CLIENT_SECRET=your_client_secret_here
+
+# 以下は初回認証後に自動設定されます
+# TWITCH_ACCESS_TOKEN=（自動設定）
+# TWITCH_REFRESH_TOKEN=（自動設定）
 
 DATABASE_URL=sqlite:///twitch_chats.db
 LOG_LEVEL=INFO
 LOG_FILE=collector.log
 ```
+
+### 4. 🆕 初回OAuth認証（簡単！）
+
+**一度だけ実行**すれば、以降はトークンが自動更新されます：
+
+```bash
+python oauth_authenticator.py
+```
+
+**実行すると：**
+1. ブラウザが自動的に開きます
+2. Twitchログイン画面が表示されます
+3. 「承認」をクリック
+4. `.env`ファイルに**Access Token**と**Refresh Token**が自動保存されます
+
+✅ これだけでセットアップ完了！以降は手動操作不要です。
 
 ### 5. データベースの初期化
 
@@ -135,7 +142,7 @@ LOG_FILE=collector.log
 python models.py
 ```
 
-### 5. チャンネル設定ファイルの作成（複数チャンネル監視用）
+### 6. チャンネル設定ファイルの作成（複数チャンネル監視用）
 
 `channels.yaml.example`を`channels.yaml`にコピーして編集：
 
@@ -349,24 +356,100 @@ asyncio.run(main())
 - [Twitch IRC Guide](https://dev.twitch.tv/docs/irc/guide/)
 - [Twitch Chat Commands](https://dev.twitch.tv/docs/irc/commands/)
 - [IRCv3 Message Tags](https://dev.twitch.tv/docs/irc/tags/)
+- 🆕 [Twitch Authentication](https://dev.twitch.tv/docs/authentication/)
+- 🆕 [Refreshing Access Tokens](https://dev.twitch.tv/docs/authentication/refresh-tokens/)
+- 🆕 [Validating Tokens](https://dev.twitch.tv/docs/authentication/validate-tokens/)
+
+## 🆕 トークン自動更新の仕組み
+
+このシステムは **Twitch公式ドキュメント完全準拠** のトークン管理を実装しています：
+
+### 自動更新フロー
+
+```
+[初回認証] oauth_authenticator.py 実行
+    ↓
+Access Token + Refresh Token 取得・保存
+    ↓
+[デーモン起動] python daemon.py
+    ↓
+├─ 起動時: トークン検証（公式必須）
+├─ 1時間ごと: トークン検証（公式必須）
+├─ 401エラー検出 → 即座にリフレッシュ（最優先）
+└─ 期限10分前 → 事前リフレッシュ（補助）
+```
+
+### トークンの有効期限
+
+- **Access Token**: 約4時間
+- **Refresh Token**:
+  - Confidential Client（推奨）: **無期限**
+  - Public Client: 30日
+
+### 自動更新の利点
+
+✅ **手動操作不要**: 一度認証すれば、何ヶ月でも自動継続
+✅ **401エラー自動リカバリ**: トークン期限切れを自動検出・更新
+✅ **再起動しても継続**: サーバー再起動後も自動で動作継続
+✅ **公式推奨準拠**: Twitchの公式ドキュメント通りの実装
 
 ## トラブルシューティング
 
+### 🆕 トークンリフレッシュが失敗する場合
+
+以下の原因が考えられます：
+
+1. **Twitchアカウントのパスワード変更**
+2. **Twitchでアプリ接続を解除**
+3. **Refresh Tokenの期限切れ**（Public Clientの場合30日）
+
+**解決方法**: 再認証を実行
+```bash
+python oauth_authenticator.py
+```
+
+### 🆕 401 Unauthorized エラー
+
+**症状**: ログに `401 Unauthorized` が表示される
+
+**原因**: トークンが期限切れまたは無効
+
+**自動対応**:
+- システムが自動的にRefresh Tokenでトークンを更新します
+- ログに「トークンリフレッシュ成功」と表示されればOK
+
+**手動対応が必要な場合**:
+- Refresh Token自体が無効な場合は再認証が必要
+```bash
+python oauth_authenticator.py
+```
+
 ### WebSocket接続エラー
 
-- ユーザーアクセストークンが正しいか確認
+- 初回認証が完了しているか確認: `python oauth_authenticator.py`
+- `.env`ファイルに`TWITCH_ACCESS_TOKEN`と`TWITCH_REFRESH_TOKEN`が設定されているか確認
 - 必要なスコープ（`chat:read`）が付与されているか確認
-- トークンの有効期限が切れていないか確認
 
 ### IRC認証エラー
 
-- `Login authentication failed` エラーが出る場合、アクセストークンが無効です
-- トークンに`oauth:`プレフィックスを付けずに渡していることを確認してください（コード内で自動付与）
+- `Login authentication failed` エラーが出る場合、自動的にトークンリフレッシュを試行します
+- それでも失敗する場合は再認証が必要: `python oauth_authenticator.py`
 
 ### データベースエラー
 
 - `DATABASE_URL`が正しく設定されているか確認
 - データベースファイルへの書き込み権限があるか確認
+
+### 🆕 リダイレクトURIエラー
+
+**症状**: OAuth認証時に「Redirect URI mismatch」エラー
+
+**原因**: Twitch Developer Consoleで設定したリダイレクトURIが異なる
+
+**解決方法**:
+1. [Twitch Developers Console](https://dev.twitch.tv/console/apps)でアプリを開く
+2. リダイレクトURIに `http://localhost:3000/callback` を追加
+3. 保存して再度 `python oauth_authenticator.py` を実行
 
 ## ライセンス
 
@@ -407,7 +490,8 @@ python models.py
 
 ## 今後の拡張予定
 
-- [ ] 複数チャンネルの同時監視
+- [x] 複数チャンネルの同時監視（✅ 実装済み）
+- [x] トークン自動更新機能（✅ 実装済み）
 - [ ] WebUIの追加
 - [ ] データ分析機能（統計、ワードクラウド等）
 - [ ] 自動モデレーション機能

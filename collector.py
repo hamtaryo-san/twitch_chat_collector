@@ -1,5 +1,10 @@
 """
 チャットコレクター - Twitchライブチャットの収集メインロジック
+
+公式ドキュメント準拠:
+- 起動時にトークン検証（必須要件）
+- TokenManager統合でトークン自動更新
+- IRC接続失敗時の自動リトライ
 """
 import asyncio
 import logging
@@ -11,6 +16,7 @@ from twitch_client import TwitchAPIClient
 from twitch_irc import TwitchIRCClient
 from database import DatabaseManager
 from config_loader import ChannelConfig
+from token_manager import TokenManager
 
 logger = logging.getLogger(__name__)
 
@@ -34,14 +40,24 @@ class TwitchChatCollector:
             access_token: ユーザーアクセストークン（IRC用、chat:readスコープ）
             database_url: データベースURL
         """
+        # Helix APIクライアント（App Access Token用）
         self.twitch_client = TwitchAPIClient(
             client_id=client_id,
             client_secret=client_secret
         )
 
+        # TokenManager初期化（IRC用トークン管理）
+        self.token_manager = TokenManager(
+            client_id=client_id or Config.TWITCH_CLIENT_ID,
+            client_secret=client_secret or Config.TWITCH_CLIENT_SECRET
+        )
+
         self.access_token = access_token or Config.TWITCH_ACCESS_TOKEN
-        if not self.access_token:
-            raise ValueError("IRCにはユーザーアクセストークンが必要です")
+        if not self.access_token and not Config.TWITCH_REFRESH_TOKEN:
+            raise ValueError(
+                "IRCにはユーザーアクセストークンまたはリフレッシュトークンが必要です。\n"
+                "初回認証を実行してください: python oauth_authenticator.py"
+            )
 
         self.db_manager = DatabaseManager(database_url or Config.DATABASE_URL)
         self.irc_client: Optional[TwitchIRCClient] = None
@@ -50,6 +66,7 @@ class TwitchChatCollector:
         self.channel_streams: Dict[str, Optional[str]] = {}  # user_id -> stream_id
 
         logger.info("TwitchChatCollectorを初期化しました")
+        logger.info("TokenManager統合: トークン自動更新が有効です")
 
     async def collect_from_channels(self, channels: List[ChannelConfig]):
         """
@@ -64,6 +81,27 @@ class TwitchChatCollector:
 
         logger.info(f"{len(channels)}チャンネルからチャット収集を開始")
 
+        # ⚠️ 起動時トークン検証（公式推奨: 必須要件）
+        logger.info("起動時トークン検証を実行中...")
+        try:
+            validation = await self.token_manager.validate_token(self.access_token)
+            if validation:
+                logger.info(
+                    f"トークン検証成功: {validation['login']} "
+                    f"(残り {validation['expires_in']}秒)"
+                )
+            else:
+                # トークン無効 → リフレッシュ試行
+                logger.warning("トークン無効を検出、リフレッシュを試行...")
+                new_tokens = await self.token_manager.refresh_access_token(
+                    Config.TWITCH_REFRESH_TOKEN
+                )
+                self.access_token = new_tokens['access_token']
+                logger.info("トークンリフレッシュ成功")
+        except Exception as e:
+            logger.error(f"起動時トークン検証/リフレッシュ失敗: {e}")
+            raise
+
         # チャンネル情報を取得
         channel_map = await self._get_channel_info(channels)
 
@@ -71,17 +109,49 @@ class TwitchChatCollector:
             logger.error("有効なチャンネルが見つかりません")
             return
 
-        # IRCクライアントの初期化
+        # IRCクライアントの初期化（⚠️ TokenManager渡す）
         self.irc_client = TwitchIRCClient(
             access_token=self.access_token,
+            token_manager=self.token_manager,  # ⚠️ TokenManager統合
             on_message=self._handle_message,
             on_delete=self._handle_delete,
             on_ban=self._handle_ban
         )
 
         try:
-            # IRC WebSocket接続
-            await self.irc_client.connect()
+            # IRC WebSocket接続（リトライロジック）
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    logger.info(f"IRC WebSocket接続試行 ({attempt + 1}/{max_retries})...")
+                    await self.irc_client.connect()
+                    break
+                except ConnectionError as e:
+                    # トークン更新後の再接続要求
+                    if "再接続" in str(e) and attempt < max_retries - 1:
+                        logger.info(f"トークン更新後の再接続（試行 {attempt + 1}/{max_retries}）")
+                        await asyncio.sleep(2)
+                        # 新しいトークンを取得
+                        self.access_token = await self.token_manager.get_valid_access_token(
+                            Config.TWITCH_ACCESS_TOKEN,
+                            Config.TWITCH_REFRESH_TOKEN
+                        )
+                        # IRCクライアントを再作成
+                        self.irc_client = TwitchIRCClient(
+                            access_token=self.access_token,
+                            token_manager=self.token_manager,
+                            on_message=self._handle_message,
+                            on_delete=self._handle_delete,
+                            on_ban=self._handle_ban
+                        )
+                        continue
+                    raise
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"IRC接続失敗、リトライします: {e}")
+                        await asyncio.sleep(2)
+                        continue
+                    raise
 
             # 全チャンネルに参加
             await self._join_all_channels(channel_map)

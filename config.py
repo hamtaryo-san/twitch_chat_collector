@@ -17,6 +17,8 @@ class Config:
     TWITCH_CLIENT_SECRET: str = os.getenv('TWITCH_CLIENT_SECRET', '')
     # ユーザーアクセストークン（IRC用、必要スコープ: chat:read）
     TWITCH_ACCESS_TOKEN: Optional[str] = os.getenv('TWITCH_ACCESS_TOKEN')
+    # リフレッシュトークン（トークン自動更新用）
+    TWITCH_REFRESH_TOKEN: Optional[str] = os.getenv('TWITCH_REFRESH_TOKEN')
 
     # Twitch API URL
     TWITCH_API_BASE_URL: str = 'https://api.twitch.tv/helix'
@@ -48,6 +50,12 @@ class Config:
             raise ValueError("TWITCH_CLIENT_IDが設定されていません")
         if not cls.TWITCH_CLIENT_SECRET:
             raise ValueError("TWITCH_CLIENT_SECRETが設定されていません")
+        # ACCESS_TOKENまたはREFRESH_TOKENのいずれか必須
+        if not cls.TWITCH_ACCESS_TOKEN and not cls.TWITCH_REFRESH_TOKEN:
+            raise ValueError(
+                "TWITCH_ACCESS_TOKENまたはTWITCH_REFRESH_TOKENが必要です。\n"
+                "初回認証を実行してください: python oauth_authenticator.py"
+            )
         return True
 
 

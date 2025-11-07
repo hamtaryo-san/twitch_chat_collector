@@ -1,13 +1,24 @@
 """
 Twitch IRC WebSocketクライアント - リアルタイムチャットイベント受信
 IRCv3 Message Tagsをサポート
+
+公式ドキュメント準拠:
+- IRC認証: PASS oauth:<token> → NICK justinfan12345 の順序厳守
+- 認証失敗時: "Login authentication failed" 検出 → トークンリフレッシュ → 再接続
+- 必要スコープ: chat:read（読み取りのみ）
+
+参考:
+https://dev.twitch.tv/docs/irc/authenticate-bot/
 """
 import asyncio
 import logging
 import re
-from typing import Optional, Dict, Any, Callable, Set
+from typing import Optional, Dict, Any, Callable, Set, TYPE_CHECKING
 from datetime import datetime
 import websockets
+
+if TYPE_CHECKING:
+    from token_manager import TokenManager
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +32,7 @@ class TwitchIRCClient:
     def __init__(
         self,
         access_token: str,
+        token_manager: Optional['TokenManager'] = None,
         on_message: Optional[Callable] = None,
         on_delete: Optional[Callable] = None,
         on_ban: Optional[Callable] = None
@@ -30,11 +42,13 @@ class TwitchIRCClient:
 
         Args:
             access_token: Twitchアクセストークン（chat:readスコープ）
+            token_manager: TokenManagerインスタンス（トークン自動更新用、推奨）
             on_message: チャットメッセージ受信時のコールバック
             on_delete: メッセージ削除時のコールバック
             on_ban: ユーザーBan/タイムアウト時のコールバック
         """
         self.access_token = access_token
+        self.token_manager = token_manager
         self.websocket = None
         self.is_connected = False
         self.joined_channels: Set[str] = set()
@@ -49,6 +63,8 @@ class TwitchIRCClient:
         self.message_pattern = re.compile(r':([^!]+)!.*?PRIVMSG #([^ ]+) :(.+)')
 
         logger.info("TwitchIRCクライアントを初期化しました")
+        if self.token_manager:
+            logger.info("TokenManager統合: トークン自動更新が有効です")
 
     async def connect(self):
         """IRC WebSocketサーバーに接続"""
@@ -72,11 +88,31 @@ class TwitchIRCClient:
             raise
 
     async def _authenticate(self):
-        """IRC認証とCapability Negotiation"""
+        """
+        IRC認証とCapability Negotiation
+
+        公式準拠:
+        - PASS oauth:<token> → NICK の順序厳守（oauth:接頭辞あり）
+        - 認証失敗時は TokenManager でリフレッシュを試行
+        """
+        # 認証前にトークン有効性チェック（オプション、推奨）
+        if self.token_manager:
+            try:
+                from config import Config
+                logger.debug("認証前にトークン有効性をチェック中...")
+                self.access_token = await self.token_manager.get_valid_access_token(
+                    Config.TWITCH_ACCESS_TOKEN,
+                    Config.TWITCH_REFRESH_TOKEN
+                )
+                logger.debug("トークン有効性チェック完了")
+            except Exception as e:
+                logger.warning(f"トークン事前チェック失敗（継続）: {e}")
+
         # IRCv3 Capabilityを要求
         await self.websocket.send('CAP REQ :twitch.tv/tags twitch.tv/commands')
 
-        # OAuth認証
+        # ⚠️ 重要: OAuth認証（PASS → NICK の順序厳守）
+        # IRC用は oauth: 接頭辞あり（validateと異なる）
         await self.websocket.send(f'PASS oauth:{self.access_token}')
         await self.websocket.send('NICK justinfan12345')  # 匿名ユーザー名
 
@@ -92,8 +128,36 @@ class TwitchIRCClient:
                 logger.info("IRC認証成功")
                 break
 
+            # ⚠️ 認証失敗検出（401相当）
             if 'NOTICE' in response and 'Login authentication failed' in response:
-                raise ValueError("IRC認証失敗: アクセストークンが無効です")
+                # TokenManagerがあればリフレッシュを試行
+                if self.token_manager:
+                    logger.warning("IRC認証失敗を検出、トークンリフレッシュを試行...")
+                    try:
+                        from config import Config
+                        new_tokens = await self.token_manager.refresh_access_token(
+                            Config.TWITCH_REFRESH_TOKEN
+                        )
+                        self.access_token = new_tokens['access_token']
+                        logger.info("トークンリフレッシュ成功、再接続が必要です")
+                        # 再接続が必要なことを通知
+                        raise ConnectionError(
+                            "トークン更新完了。IRC接続を閉じて再接続してください。"
+                        )
+                    except ValueError as e:
+                        # Refresh Token無効（再認証が必要）
+                        raise ValueError(
+                            f"IRC認証失敗後のリフレッシュも失敗: {e}\n\n"
+                            "再認証が必要です: python oauth_authenticator.py"
+                        )
+                else:
+                    # TokenManagerなし
+                    raise ValueError(
+                        "IRC認証失敗: アクセストークンが無効です\n\n"
+                        "トークンを更新してください:\n"
+                        "1. TokenManagerを使用する（推奨）\n"
+                        "2. python oauth_authenticator.py で再認証"
+                    )
 
     async def join_channels(self, channels: list[str]):
         """

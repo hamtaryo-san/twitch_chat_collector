@@ -1,8 +1,13 @@
 # 環境変数
 .env
+.env.backup
+.env.*
 
 # 設定ファイル（個人の監視対象チャンネル情報）
 channels.yaml
+
+# テストファイル
+test_token.py
 
 # データベース
 *.db
