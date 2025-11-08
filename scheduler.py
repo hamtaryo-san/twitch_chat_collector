@@ -16,6 +16,7 @@ from config import Config
 from config_loader import load_config, ChannelConfig
 from twitch_client import TwitchAPIClient
 from database import DatabaseManager
+from token_manager import TokenManager
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,13 @@ class StreamScheduler:
         """
         self.config_path = config_path
         self.config = load_config(config_path)
+
+        # ⚠️ TokenManager初期化（トークン自動更新用）
+        self.token_manager = TokenManager(
+            client_id=Config.TWITCH_CLIENT_ID,
+            client_secret=Config.TWITCH_CLIENT_SECRET
+        )
+
         self.twitch_client = TwitchAPIClient()
         self.db_manager = DatabaseManager(Config.DATABASE_URL)
         self.running = True
@@ -112,13 +120,25 @@ class StreamScheduler:
 
         return streams_map
 
-    def check_and_save_streams(self) -> Dict[str, Any]:
+    async def check_and_save_streams(self) -> Dict[str, Any]:
         """
         配信状態をチェックしてデータベースに保存
 
         Returns:
             チェック結果の統計情報
         """
+        # ⚠️ API呼び出し前にトークン検証・更新
+        try:
+            new_token = await self.token_manager.get_valid_access_token(
+                Config.TWITCH_ACCESS_TOKEN,
+                Config.TWITCH_REFRESH_TOKEN
+            )
+            # TwitchAPIClientのトークンを更新
+            self.twitch_client.update_access_token(new_token)
+        except Exception as e:
+            logger.error(f"トークン更新エラー: {e}")
+            # エラー時も処理継続（既存トークンで試行）
+
         logger.info("配信状態をチェック中...")
 
         enabled_channels = self.config.get_enabled_channels()
@@ -200,7 +220,7 @@ class StreamScheduler:
         logger.info(f"スケジューラーを開始しました（間隔: {interval_minutes}分）")
 
         # 初回チェック
-        self.check_and_save_streams()
+        await self.check_and_save_streams()
 
         while self.running:
             try:
@@ -211,7 +231,7 @@ class StreamScheduler:
                     break
 
                 # 配信状態をチェック
-                self.check_and_save_streams()
+                await self.check_and_save_streams()
 
             except KeyboardInterrupt:
                 logger.info("ユーザーによる中断")
@@ -224,14 +244,14 @@ class StreamScheduler:
 
         logger.info("スケジューラーを停止しました")
 
-    def run_once(self) -> Dict[str, Any]:
+    async def run_once(self) -> Dict[str, Any]:
         """
         1回だけチェックを実行（テスト用）
 
         Returns:
             チェック結果の統計情報
         """
-        return self.check_and_save_streams()
+        return await self.check_and_save_streams()
 
 
 async def main():
@@ -275,7 +295,7 @@ async def main():
 
     if args.once:
         # 1回だけ実行
-        stats = scheduler.run_once()
+        stats = await scheduler.run_once()
         print("\n=== チェック結果 ===")
         print(f"チェックしたチャンネル数: {stats['checked']}")
         print(f"配信中: {stats['live']}")

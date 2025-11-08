@@ -124,9 +124,8 @@ class CollectorDaemon:
         """
         デーモンを実行
 
-        公式ドキュメント準拠:
-        - 起動時 + 毎時のトークン検証（必須要件）
-        - TokenManager統合で自動更新
+        各コンポーネント（Scheduler、Collector）が独自にTokenManagerを持ち、
+        API呼び出し前にトークンを自動検証・更新します。
         """
         # 既に実行中かチェック
         if self.check_pid_file():
@@ -152,76 +151,15 @@ class CollectorDaemon:
             for ch in enabled_channels:
                 logger.info(f"  - {ch.display_name or ch.get_identifier()}")
 
-            # ⚠️ TokenManager初期化（トークン自動更新用）
-            token_manager = TokenManager(
-                client_id=Config.TWITCH_CLIENT_ID,
-                client_secret=Config.TWITCH_CLIENT_SECRET
-            )
-
-            # スケジューラーの初期化
+            # スケジューラーの初期化（内部でTokenManagerを初期化）
             self.scheduler = StreamScheduler(self.config_path)
 
-            # コレクターの初期化（既にTokenManagerを内部で初期化）
+            # コレクターの初期化（内部でTokenManagerを初期化）
             self.collector = TwitchChatCollector()
 
-            # ⚠️ トークン定期検証タスク（公式推奨: 毎時検証が必須）
-            async def token_validation_loop():
-                """
-                1時間ごとのトークン検証
-
-                公式ドキュメント: 起動時 + 毎時検証が必須
-                目的: ユーザーがアプリ接続を解除した場合などを検出
-                """
-                while self.running:
-                    try:
-                        # 1時間待機
-                        await asyncio.sleep(3600)
-
-                        if not self.running:
-                            break
-
-                        logger.info("=== 定期トークン検証を実行中 ===")
-
-                        # トークン検証
-                        validation = await token_manager.validate_token(
-                            Config.TWITCH_ACCESS_TOKEN
-                        )
-
-                        if validation is None:
-                            # 401エラー → リフレッシュ試行
-                            logger.warning("定期検証でトークン無効を検出、リフレッシュを実行...")
-                            try:
-                                new_tokens = await token_manager.refresh_access_token(
-                                    Config.TWITCH_REFRESH_TOKEN
-                                )
-                                logger.info("定期トークンリフレッシュ成功")
-                                logger.info(f"  新しいAccess Token: {new_tokens['access_token'][:20]}...")
-                            except Exception as e:
-                                logger.error(f"定期トークンリフレッシュ失敗: {e}")
-                                # ⚠️ アラート送信（オプション）
-                                # 本番環境では、ここでメール通知やSlack通知を送る
-                                logger.critical(
-                                    "トークンリフレッシュ失敗！手動介入が必要です。\n"
-                                    "再認証を実行してください: python oauth_authenticator.py"
-                                )
-                        else:
-                            # トークン有効
-                            logger.info(
-                                f"トークン有効確認: {validation['login']} "
-                                f"(残り {validation['expires_in']}秒, "
-                                f"スコープ: {', '.join(validation['scopes'])})"
-                            )
-
-                    except asyncio.CancelledError:
-                        logger.info("トークン検証ループが停止されました")
-                        break
-                    except Exception as e:
-                        logger.error(f"定期トークン検証エラー: {e}", exc_info=True)
-                        # エラーが発生してもループは継続
-                        await asyncio.sleep(60)  # 1分待機してから再試行
-
-            # スケジューラー、コレクター、トークン検証を並行実行
-            logger.info("スケジューラー、コレクター、トークン検証を起動します...")
+            # スケジューラーとコレクターを並行実行
+            # 各コンポーネントが独自にトークン管理を行う
+            logger.info("スケジューラーとコレクターを起動します...")
 
             tasks = [
                 asyncio.create_task(
@@ -231,10 +169,6 @@ class CollectorDaemon:
                 asyncio.create_task(
                     self.collector.collect_from_channels(enabled_channels),
                     name="collector"
-                ),
-                asyncio.create_task(
-                    token_validation_loop(),
-                    name="token_validator"  # ⚠️ トークン検証タスク追加
                 )
             ]
 

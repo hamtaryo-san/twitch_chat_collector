@@ -37,6 +37,17 @@ class TwitchAPIClient:
 
         logger.info("Twitch API クライアントを初期化しました")
 
+    def update_access_token(self, new_access_token: str):
+        """
+        アクセストークンを更新
+
+        Args:
+            new_access_token: 新しいアクセストークン
+        """
+        self.access_token = new_access_token
+        self.headers['Authorization'] = f'Bearer {new_access_token}'
+        logger.info("アクセストークンを更新しました")
+
     def _get_app_access_token(self) -> str:
         """
         アプリアクセストークンを取得（Client Credentials Flow）
