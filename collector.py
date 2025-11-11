@@ -292,6 +292,14 @@ class TwitchChatCollector:
                 stream_id = self.channel_streams.get(broadcaster_user_id)
                 if stream_id:
                     event['stream_id'] = stream_id
+                else:
+                    # stream_idが取得できない場合はスキップ（配信終了後のメッセージ）
+                    logger.warning(
+                        f"[{event['broadcaster_user_name']}] 配信IDが取得できないため"
+                        f"メッセージをスキップ: {event['chatter_user_name']}: "
+                        f"{event['message_text'][:30]}..."
+                    )
+                    return
 
             self.db_manager.save_chat_message(session, event)
 
@@ -315,6 +323,13 @@ class TwitchChatCollector:
             stream_id = self.channel_streams.get(broadcaster_user_id)
             if stream_id:
                 event['stream_id'] = stream_id
+            else:
+                # stream_idが取得できない場合はスキップ（配信終了後のイベント）
+                logger.warning(
+                    f"[{event['broadcaster_user_name']}] 配信IDが取得できないため"
+                    f"削除イベントをスキップ: {event['target_user_name']} (message_id: {event['message_id']})"
+                )
+                return
 
             self.db_manager.save_deleted_event(session, event)
 
@@ -337,6 +352,14 @@ class TwitchChatCollector:
             stream_id = self.channel_streams.get(broadcaster_user_id)
             if stream_id:
                 event['stream_id'] = stream_id
+            else:
+                # stream_idが取得できない場合はスキップ（配信終了後のイベント）
+                ban_type = "永久Ban" if event['is_permanent'] else "タイムアウト"
+                logger.warning(
+                    f"[{event['broadcaster_user_name']}] 配信IDが取得できないため"
+                    f"Banイベントをスキップ: [{ban_type}] {event['user_name']}"
+                )
+                return
 
             self.db_manager.save_banned_event(session, event)
 
@@ -360,6 +383,13 @@ class TwitchChatCollector:
             stream_id = self.channel_streams.get(broadcaster_user_id)
             if stream_id:
                 event['stream_id'] = stream_id
+            else:
+                # stream_idが取得できない場合はスキップ（配信終了後のイベント）
+                logger.warning(
+                    f"[{event['broadcaster_user_name']}] 配信IDが取得できないため"
+                    f"Unbanイベントをスキップ: {event['user_name']}"
+                )
+                return
 
             self.db_manager.save_unbanned_event(session, event)
 
