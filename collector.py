@@ -259,6 +259,18 @@ class TwitchChatCollector:
         Args:
             user_id: ユーザーID
         """
+        # API呼び出し前にトークンを検証・更新（scheduler.pyと同じロジック）
+        try:
+            new_token = await self.token_manager.get_valid_access_token(
+                Config.TWITCH_ACCESS_TOKEN,
+                Config.TWITCH_REFRESH_TOKEN
+            )
+            # TwitchAPIClientのトークンを更新
+            self.twitch_client.update_access_token(new_token)
+        except Exception as e:
+            logger.warning(f"トークン更新エラー (既存トークンで試行): {e}")
+            # エラー時も処理継続（既存トークンで試行）
+
         streams = self.twitch_client.get_streams(user_id=user_id)
 
         if streams:

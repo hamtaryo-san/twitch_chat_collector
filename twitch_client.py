@@ -133,6 +133,30 @@ class TwitchAPIClient:
             logger.info(f"{len(streams)}件のライブ配信を取得しました")
             return self._parse_streams(streams)
 
+        except requests.exceptions.HTTPError as e:
+            # 401エラーの場合、トークンを再取得してリトライ
+            if e.response.status_code == 401:
+                logger.warning("401 Unauthorized検出、トークンを再取得してリトライします")
+                try:
+                    # 新しいApp Access Tokenを取得
+                    self.access_token = self._get_app_access_token()
+                    self.headers['Authorization'] = f'Bearer {self.access_token}'
+
+                    # リトライ
+                    response = requests.get(url, headers=self.headers, params=params)
+                    response.raise_for_status()
+
+                    data = response.json()
+                    streams = data.get('data', [])
+
+                    logger.info(f"{len(streams)}件のライブ配信を取得しました（リトライ成功）")
+                    return self._parse_streams(streams)
+                except Exception as retry_error:
+                    logger.error(f"トークン再取得後のリトライ失敗: {retry_error}")
+                    raise
+            else:
+                logger.error(f"Twitch API エラー (ストリーム取得): {e}")
+                raise
         except requests.exceptions.RequestException as e:
             logger.error(f"Twitch API エラー (ストリーム取得): {e}")
             raise
@@ -170,6 +194,30 @@ class TwitchAPIClient:
             logger.info(f"{len(users)}件のユーザー情報を取得しました")
             return users
 
+        except requests.exceptions.HTTPError as e:
+            # 401エラーの場合、トークンを再取得してリトライ
+            if e.response.status_code == 401:
+                logger.warning("401 Unauthorized検出、トークンを再取得してリトライします")
+                try:
+                    # 新しいApp Access Tokenを取得
+                    self.access_token = self._get_app_access_token()
+                    self.headers['Authorization'] = f'Bearer {self.access_token}'
+
+                    # リトライ
+                    response = requests.get(url, headers=self.headers, params=params)
+                    response.raise_for_status()
+
+                    data = response.json()
+                    users = data.get('data', [])
+
+                    logger.info(f"{len(users)}件のユーザー情報を取得しました（リトライ成功）")
+                    return users
+                except Exception as retry_error:
+                    logger.error(f"トークン再取得後のリトライ失敗: {retry_error}")
+                    raise
+            else:
+                logger.error(f"Twitch API エラー (ユーザー情報取得): {e}")
+                raise
         except requests.exceptions.RequestException as e:
             logger.error(f"Twitch API エラー (ユーザー情報取得): {e}")
             raise
