@@ -127,17 +127,9 @@ class StreamScheduler:
         Returns:
             チェック結果の統計情報
         """
-        # ⚠️ API呼び出し前にトークン検証・更新
-        try:
-            new_token = await self.token_manager.get_valid_access_token(
-                Config.TWITCH_ACCESS_TOKEN,
-                Config.TWITCH_REFRESH_TOKEN
-            )
-            # TwitchAPIClientのトークンを更新
-            self.twitch_client.update_access_token(new_token)
-        except Exception as e:
-            logger.error(f"トークン更新エラー: {e}")
-            # エラー時も処理継続（既存トークンで試行）
+        # TwitchAPIClientは初期化時にApp Access Tokenを取得済み
+        # Helix APIはApp Access Tokenで正常に動作するため、
+        # User Access Tokenの更新は不要（IRCは別途User Access Tokenを使用）
 
         logger.info("配信状態をチェック中...")
 
