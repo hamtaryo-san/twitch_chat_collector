@@ -65,6 +65,9 @@ class TwitchChatCollector:
         # チャンネルごとの配信ID管理
         self.channel_streams: Dict[str, Optional[str]] = {}  # user_id -> stream_id
 
+        # 実行状態フラグ（再接続ループ制御用）
+        self.running = True
+
         logger.info("TwitchChatCollectorを初期化しました")
         logger.info("TokenManager統合: トークン自動更新が有効です")
 
@@ -156,15 +159,56 @@ class TwitchChatCollector:
             # 全チャンネルに参加
             await self._join_all_channels(channel_map)
 
-            # IRCメッセージをリッスン
-            await self.irc_client.listen()
+            # IRCメッセージをリッスン（自動再接続ループ）
+            while self.running:
+                try:
+                    logger.info("IRCメッセージのリッスンを開始...")
+                    await self.irc_client.listen()
+
+                    # listen()が正常終了した場合（WebSocket切断）
+                    if not self.running:
+                        break
+
+                    # 切断された場合、再接続を試みる
+                    logger.warning("IRC接続が切断されました。5秒後に再接続します...")
+                    await asyncio.sleep(5)
+
+                    # IRC接続を再作成
+                    await self.irc_client.close()
+                    self.irc_client = TwitchIRCClient(
+                        access_token=self.access_token,
+                        token_manager=self.token_manager,
+                        on_message=self._handle_message,
+                        on_delete=self._handle_delete,
+                        on_ban=self._handle_ban
+                    )
+
+                    # 再接続
+                    logger.info("IRC WebSocket再接続を試みます...")
+                    await self.irc_client.connect()
+                    await self._join_all_channels(channel_map)
+                    logger.info("IRC WebSocket再接続に成功しました")
+
+                except KeyboardInterrupt:
+                    logger.info("ユーザーによる中断を検出、ループを終了します")
+                    self.running = False
+                    break
+
+                except Exception as e:
+                    logger.error(f"リッスンエラー: {e}", exc_info=True)
+                    if not self.running:
+                        break
+                    logger.info("5秒後に再接続を試みます...")
+                    await asyncio.sleep(5)
 
         except KeyboardInterrupt:
             logger.info("ユーザーによる中断")
+            self.running = False
         except Exception as e:
             logger.error(f"予期しないエラー: {e}", exc_info=True)
         finally:
             # IRC WebSocket接続を閉じる
+            self.running = False
             if self.irc_client:
                 await self.irc_client.close()
 

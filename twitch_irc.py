@@ -73,7 +73,7 @@ class TwitchIRCClient:
         try:
             self.websocket = await websockets.connect(
                 self.IRC_WS_URL,
-                ping_interval=60,
+                ping_interval=20,  # デフォルト値。接続異常の早期検出用
                 ping_timeout=10
             )
             self.is_connected = True
